@@ -1,5 +1,24 @@
 This this the changelog file for the Pothos Audio toolkit.
 
+Release 0.4.0 (pending)
+==========================
+
+- Port to the modernized Pothos core (branch pothos2): no Poco
+- miniaudio (a copy of miniaudio.h 0.11.25 in third_party/miniaudio) in
+  place of PortAudio; the build needs no audio packages
+- The device converts the sample format, the channel count and the
+  sample rate; rxRate gives the rate of the stream
+- Device names come from miniaudio: a saved PortAudio name gives an
+  error; the device lists of the source and the sink are separate
+- /devices/audio/info: the keys "Audio Device", "Backend Name" and
+  "miniaudio Version"
+- POTHOS_AUDIO_BACKEND selects the miniaudio backend (null for tests)
+- The sink reports no underflow before the first data; the backoff time
+  starts at the report
+- CMake 3.25 or higher; nlohmann_json from find_package
+- Add self-tests on the null backend of miniaudio
+- The debian packaging is removed
+
 Release 0.3.2 (pending)
 ==========================
 
