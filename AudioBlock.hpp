@@ -7,8 +7,10 @@
 #include <miniaudio.h>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <optional>
 #include <string>
+#include <vector>
 
 /*!
  * The common part of the audio source and sink: a miniaudio context, one
@@ -39,11 +41,14 @@ protected:
     //! Wait at most a short time for frames to read (source) or space to write (sink)
     size_t waitAvailable(void);
 
-    //! Move frames from the ring buffer to the output ports (source)
-    void readFrames(const size_t numFrames);
+    //! Move frames from the ring buffer to the output ports (source); returns the count moved
+    size_t readFrames(const size_t numFrames);
 
-    //! Move frames from the input ports to the ring buffer (sink)
-    void writeFrames(const size_t numFrames);
+    //! Move frames from the input ports to the ring buffer (sink); returns the count moved
+    size_t writeFrames(const size_t numFrames);
+
+    //! The frames of a new overflow or underflow event since the last call, or nothing
+    std::optional<unsigned long long> takeXrun(void);
 
     //! Report an overflow or underflow: "aO"/"aU" to stderr or the logger, and start the backoff
     void reportXrun(const char *shortText, const std::string &message);
@@ -69,8 +74,10 @@ protected:
     std::chrono::steady_clock::time_point _readyTime;
 
     //written by the device callback, read by work()
-    std::atomic<bool> _xrun;
-    std::atomic<unsigned long long> _xrunFrames;
+    //bit 63: a new event; the other bits: the frames of the events
+    static constexpr std::uint64_t XrunEventBit = std::uint64_t(1) << 63;
+    static constexpr std::uint64_t XrunFramesMask = XrunEventBit - 1;
+    std::atomic<std::uint64_t> _xrunState;
     std::atomic<bool> _dataWritten; //sink: data came after activate()
     std::atomic<bool> _running; //between activate() and deactivate()
     std::atomic<bool> _deviceStopped; //the device stopped without deactivate()
@@ -82,6 +89,7 @@ private:
     static void notificationCallback(const ma_device_notification *notification);
     void captureCallback(const void *input, ma_uint32 frameCount);
     void playbackCallback(void *output, ma_uint32 frameCount);
+    void addXrun(const ma_uint32 frameCount, const bool newEvent);
     void closeStream(void);
 
     ma_context _context;
@@ -94,4 +102,7 @@ private:
     bool _deviceInit;
     ma_pcm_rb _ringBuffer;
     bool _ringBufferInit;
+    bool _timerPeriodSet; //Windows: timeBeginPeriod(1) is active
+    std::vector<void *> _chanPtrs; //PORTPERCHAN: no allocation in work()
+    std::vector<const void *> _chanConstPtrs;
 };

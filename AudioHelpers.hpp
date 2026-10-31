@@ -66,4 +66,7 @@ void interleave(const std::vector<const void *> &ins, void *out, size_t numFrame
  */
 std::optional<ma_device_id> findDevice(ma_context &ctx, const ma_device_type type, const std::string &name, std::string &foundName);
 
+//! The different native sample rates of a device, in order (0 means "any rate": not in the list)
+std::vector<ma_uint32> nativeSampleRates(const ma_device_info &info);
+
 } //namespace PothosAudio

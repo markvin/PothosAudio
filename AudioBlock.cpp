@@ -7,8 +7,17 @@
 #include <Pothos/System/Logger.hpp>
 #include <nlohmann/json.hpp>
 #include <algorithm>
+#include <cmath>
 #include <iostream>
+#include <limits>
 #include <thread>
+#ifdef _WIN32
+#ifndef NOMINMAX
+#define NOMINMAX //std::max of this file
+#endif
+#include <windows.h>
+#include <timeapi.h> //timeBeginPeriod
+#endif
 
 using json = nlohmann::json;
 using namespace PothosAudio;
@@ -29,8 +38,7 @@ AudioBlock::AudioBlock(const std::string &blockName, const bool isSink, const Po
     _reportLogger(false),
     _reportStderror(true),
     _backoffTime(0),
-    _xrun(false),
-    _xrunFrames(0),
+    _xrunState(0),
     _dataWritten(false),
     _running(false),
     _deviceStopped(false),
@@ -42,7 +50,10 @@ AudioBlock::AudioBlock(const std::string &blockName, const bool isSink, const Po
     _device{},
     _deviceInit(false),
     _ringBuffer{},
-    _ringBufferInit(false)
+    _ringBufferInit(false),
+    _timerPeriodSet(false),
+    _chanPtrs(numChans),
+    _chanConstPtrs(numChans)
 {
     this->registerCall(this, POTHOS_FCN_TUPLE(AudioBlock, overlay));
     this->registerCall(this, POTHOS_FCN_TUPLE(AudioBlock, setupDevice));
@@ -125,6 +136,11 @@ void AudioBlock::setupDevice(const std::string &deviceName)
 
 void AudioBlock::setupStream(const double sampRate)
 {
+    //miniaudio takes an integer rate, and 0 would select the native rate
+    if (not std::isfinite(sampRate) or sampRate < 0.5 or sampRate > double(std::numeric_limits<ma_uint32>::max()))
+    {
+        throw Pothos::InvalidArgumentException("AudioBlock::setupStream("+std::to_string(sampRate)+")", "the sample rate must be a positive number");
+    }
     this->closeStream();
 
     //the device converts the format, the channels and the rate to the request
@@ -142,7 +158,7 @@ void AudioBlock::setupStream(const double sampRate)
         config.capture.format = _format;
         config.capture.channels = ma_uint32(_numChans);
     }
-    config.sampleRate = ma_uint32(sampRate);
+    config.sampleRate = ma_uint32(std::lround(sampRate));
     config.dataCallback = &AudioBlock::dataCallback;
     config.notificationCallback = &AudioBlock::notificationCallback;
     config.pUserData = this;
@@ -205,8 +221,7 @@ void AudioBlock::activate(void)
 {
     if (not _deviceInit) throw Pothos::Exception("AudioBlock::activate()", "setupStream() was not called");
     ma_pcm_rb_reset(&_ringBuffer);
-    _xrun = false;
-    _xrunFrames = 0;
+    _xrunState = 0;
     _dataWritten = false;
     _xrunActive = false;
     _primed = false;
@@ -220,12 +235,21 @@ void AudioBlock::activate(void)
     {
         throw Pothos::Exception("AudioBlock::activate()", std::string("ma_device_start: ") + ma_result_description(result));
     }
+    #ifdef _WIN32
+    //the 1 ms sleeps of waitAvailable(): the default timer of Windows is about 15.6 ms
+    if (not _timerPeriodSet) _timerPeriodSet = (timeBeginPeriod(1) == TIMERR_NOERROR);
+    #endif
     _sendLabel = true;
 }
 
 void AudioBlock::deactivate(void)
 {
     _running = false; //this stop is not a failure
+    #ifdef _WIN32
+    if (_timerPeriodSet) timeEndPeriod(1);
+    #endif
+    _timerPeriodSet = false;
+    if (not _deviceInit) return; //no stream: nothing to stop
     const ma_result result = ma_device_stop(&_device);
     if (result != MA_SUCCESS)
     {
@@ -235,6 +259,7 @@ void AudioBlock::deactivate(void)
 
 void AudioBlock::stopDeviceForTest(void)
 {
+    if (not _deviceInit) return;
     ma_device_stop(&_device);
 }
 
@@ -272,8 +297,7 @@ void AudioBlock::captureCallback(const void *input, ma_uint32 frameCount)
     //a full buffer: the frames are dropped (an overflow), one report for each event
     if (frameCount != 0)
     {
-        _xrunFrames += frameCount;
-        if (not _xrunActive) _xrun = true;
+        this->addXrun(frameCount, not _xrunActive);
         _xrunActive = true;
     }
     else _xrunActive = false;
@@ -312,11 +336,30 @@ void AudioBlock::playbackCallback(void *output, ma_uint32 frameCount)
     if (frameCount != 0)
     {
         ma_silence_pcm_frames(dst, frameCount, _format, ma_uint32(_numChans));
-        _xrunFrames += frameCount;
-        if (not _xrunActive) _xrun = true;
+        this->addXrun(frameCount, not _xrunActive);
         _xrunActive = true;
     }
     else _xrunActive = false;
+}
+
+/***********************************************************************
+ * Overflow and underflow count: one atomic word for the event and the frames
+ **********************************************************************/
+void AudioBlock::addXrun(const ma_uint32 frameCount, const bool newEvent)
+{
+    auto state = _xrunState.load(std::memory_order_relaxed);
+    while (true)
+    {
+        auto next = ((state & XrunFramesMask) + frameCount) & XrunFramesMask;
+        next |= (state & XrunEventBit) | (newEvent? XrunEventBit : 0);
+        if (_xrunState.compare_exchange_weak(state, next)) return;
+    }
+}
+
+std::optional<unsigned long long> AudioBlock::takeXrun(void)
+{
+    if ((_xrunState.load() & XrunEventBit) == 0) return std::nullopt;
+    return _xrunState.exchange(0) & XrunFramesMask;
 }
 
 /***********************************************************************
@@ -334,7 +377,7 @@ size_t AudioBlock::waitAvailable(void)
     }
 }
 
-void AudioBlock::readFrames(const size_t numFrames)
+size_t AudioBlock::readFrames(const size_t numFrames)
 {
     const size_t frameSize = _sampleSize*_numChans;
     const auto &outs = this->workInfo().outputPointers;
@@ -351,9 +394,8 @@ void AudioBlock::readFrames(const size_t numFrames)
         }
         else
         {
-            std::vector<void *> dsts(_numChans);
-            for (size_t ch = 0; ch < _numChans; ch++) dsts[ch] = static_cast<char *>(outs[ch]) + done*_sampleSize;
-            deinterleave(src, dsts, chunk, _numChans, _sampleSize);
+            for (size_t ch = 0; ch < _numChans; ch++) _chanPtrs[ch] = static_cast<char *>(outs[ch]) + done*_sampleSize;
+            deinterleave(src, _chanPtrs, chunk, _numChans, _sampleSize);
         }
         ma_pcm_rb_commit_read(&_ringBuffer, chunk);
         done += chunk;
@@ -363,16 +405,17 @@ void AudioBlock::readFrames(const size_t numFrames)
     if (_isInt8)
     {
         const size_t numPorts = _interleaved? 1 : _numChans;
-        const size_t perPort = _interleaved? numFrames*_numChans : numFrames;
+        const size_t perPort = _interleaved? done*_numChans : done;
         for (size_t p = 0; p < numPorts; p++)
         {
             auto samples = static_cast<std::uint8_t *>(outs[p]);
             for (size_t i = 0; i < perPort; i++) samples[i] = std::uint8_t(u8ToInt8(samples[i]));
         }
     }
+    return done;
 }
 
-void AudioBlock::writeFrames(const size_t numFrames)
+size_t AudioBlock::writeFrames(const size_t numFrames)
 {
     const size_t frameSize = _sampleSize*_numChans;
     const auto &ins = this->workInfo().inputPointers;
@@ -389,9 +432,8 @@ void AudioBlock::writeFrames(const size_t numFrames)
         }
         else
         {
-            std::vector<const void *> srcs(_numChans);
-            for (size_t ch = 0; ch < _numChans; ch++) srcs[ch] = static_cast<const char *>(ins[ch]) + done*_sampleSize;
-            interleave(srcs, dst, chunk, _numChans, _sampleSize);
+            for (size_t ch = 0; ch < _numChans; ch++) _chanConstPtrs[ch] = static_cast<const char *>(ins[ch]) + done*_sampleSize;
+            interleave(_chanConstPtrs, dst, chunk, _numChans, _sampleSize);
         }
 
         //miniaudio has no signed 8-bit format: convert in the ring buffer
@@ -404,6 +446,7 @@ void AudioBlock::writeFrames(const size_t numFrames)
         done += chunk;
     }
     _dataWritten = true;
+    return done;
 }
 
 void AudioBlock::reportXrun(const char *shortText, const std::string &message)

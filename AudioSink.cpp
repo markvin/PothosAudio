@@ -19,7 +19,7 @@
  *
  * |param deviceName[Device Name] The name of an audio device on the system,
  * the integer index of an audio device on the system,
- * or an empty string to use the default input device.
+ * or an empty string to use the default output device.
  * |widget StringEntry()
  * |default ""
  * |preview valid
@@ -105,9 +105,9 @@ public:
         if (this->deviceStopped()) return;
 
         //report the frames of silence that the device callback played
-        if (_xrun.exchange(false))
+        if (const auto frames = this->takeXrun())
         {
-            this->reportXrun("aU", "audio output underflow ("+std::to_string(_xrunFrames.exchange(0))+" frames of silence)");
+            this->reportXrun("aU", "audio output underflow ("+std::to_string(*frames)+" frames of silence)");
         }
 
         //not ready to consume because of backoff
@@ -116,8 +116,8 @@ public:
         //wait a short time for space, then come back
         const size_t available = this->waitAvailable();
         if (available == 0) return this->yield();
-        const size_t numFrames = std::min(available, this->workInfo().minInElements);
-        this->writeFrames(numFrames);
+        const size_t numFrames = this->writeFrames(std::min(available, this->workInfo().minInElements));
+        if (numFrames == 0) return this->yield();
 
         //consume buffer (all modes)
         for (auto port : this->inputs()) port->consume(numFrames);

@@ -104,3 +104,19 @@ POTHOS_TEST_BLOCK("/audio/tests", test_audio_interleave)
     POTHOS_TEST_EQUALV(left2, left);
     POTHOS_TEST_EQUALV(right2, right);
 }
+
+POTHOS_TEST_BLOCK("/audio/tests", test_audio_native_sample_rates)
+{
+    ma_device_info info{};
+    const ma_uint32 rates[] = {48000, 44100, 0, 48000, 96000};
+    for (const auto rate : rates)
+    {
+        info.nativeDataFormats[info.nativeDataFormatCount].format = ma_format_f32;
+        info.nativeDataFormats[info.nativeDataFormatCount].channels = 2;
+        info.nativeDataFormats[info.nativeDataFormatCount].sampleRate = rate;
+        info.nativeDataFormatCount++;
+    }
+    const std::vector<ma_uint32> expected{44100, 48000, 96000};
+    POTHOS_TEST_TRUE(PothosAudio::nativeSampleRates(info) == expected);
+    POTHOS_TEST_TRUE(PothosAudio::nativeSampleRates(ma_device_info{}).empty());
+}

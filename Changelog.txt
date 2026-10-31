@@ -13,6 +13,17 @@ Release 0.4.0 (pending)
 - /devices/audio/info: the keys "Audio Device", "Backend Name" and
   "miniaudio Version"
 - POTHOS_AUDIO_BACKEND selects the miniaudio backend (null for tests)
+- The sample rate must be a positive number (0, a negative rate or NaN
+  is an error); a rate that is not a whole number is rounded
+- /devices/audio/info: "Native Sample Rates" (the rates of the native
+  formats) in place of "Default Sample Rate"
+- deactivate() without setupStream() does nothing; work() produces and
+  consumes the frames that were moved; one atomic word holds the
+  overflow and underflow count; on Windows the 1 ms waits of work() use
+  a 1 ms timer period
+- The doc text of the source says "default input device", of the sink
+  "default output device"
+- The self-tests unset the POTHOS_* variables of a developer shell
 - The sink starts to play with a margin of 2 periods in its buffer (or
   after 2 periods of a short stream), and reports no underflow before
   that; one report for each overflow or underflow; the backoff time

@@ -12,6 +12,7 @@
 #include <Pothos/System/Logger.hpp>
 #include <nlohmann/json.hpp>
 #include <chrono>
+#include <cmath>
 #include <iostream>
 #include <mutex>
 #include <string>
@@ -111,6 +112,51 @@ POTHOS_TEST_BLOCK("/audio/tests", test_audio_info)
     POTHOS_TEST_TRUE(info.at("Audio Device").size() >= 1);
     POTHOS_TEST_TRUE(info.at("Audio Device").at(0).contains("Device Name"));
     POTHOS_TEST_TRUE(info.at("Audio Device").at(0).contains("Backend Name"));
+    //the null devices take any rate: no "Native Sample Rates" (test_audio_native_sample_rates)
+    for (const auto &device : info.at("Audio Device"))
+    {
+        POTHOS_TEST_TRUE(not device.contains("Default Sample Rate"));
+        if (device.contains("Native Sample Rates")) POTHOS_TEST_TRUE(device.at("Native Sample Rates").is_array());
+    }
+}
+
+POTHOS_TEST_BLOCK("/audio/tests", test_audio_bad_rate)
+{
+    auto source = Pothos::BlockRegistry::make("/audio/source", Pothos::DType("float32"), 1, "INTERLEAVED");
+    source.call("setupDevice", std::string());
+    for (const double rate : {0.0, -1.0, std::nan("")})
+    {
+        POTHOS_TEST_THROWS(source.call("setupStream", rate), Pothos::Exception);
+    }
+}
+
+POTHOS_TEST_BLOCK("/audio/tests", test_audio_rate_rounded)
+{
+    //44100.6 is 44101, not 44100: the rxRate label gives the rate of the device
+    auto source = makeAudioBlock("/audio/source", "float32", 1, "INTERLEAVED", 44100.6);
+    auto collector = Pothos::BlockRegistry::make("/blocks/collector_sink", Pothos::DType("float32"));
+    {
+        Pothos::Topology topology;
+        topology.connect(source, 0, collector, 0);
+        topology.commit();
+        std::this_thread::sleep_for(std::chrono::milliseconds(200));
+    }
+    double rxRate = 0;
+    for (const auto &label : collector.call<std::vector<Pothos::Label>>("getLabels"))
+    {
+        if (label.id == "rxRate") rxRate = label.data.convert<double>();
+    }
+    POTHOS_TEST_EQUAL(rxRate, 44101.0);
+}
+
+POTHOS_TEST_BLOCK("/audio/tests", test_audio_deactivate_without_stream)
+{
+    //no device without setupStream(): deactivate() has nothing to stop
+    auto source = Pothos::BlockRegistry::make("/audio/source", Pothos::DType("float32"), 1, "INTERLEAVED");
+    auto block = dynamic_cast<AudioBlock *>(source.call<Pothos::Block *>("getPointer"));
+    POTHOS_TEST_TRUE(block != nullptr);
+    block->deactivate();
+    block->stopDeviceForTest();
 }
 
 POTHOS_TEST_BLOCK("/audio/tests", test_audio_overlay)
@@ -246,7 +292,9 @@ POTHOS_TEST_BLOCK("/audio/tests", test_audio_source_overflow)
     POTHOS_TEST_TRUE(collector.call<Pothos::BufferChunk>("getBuffer").length > before);
 }
 
-POTHOS_TEST_BLOCK("/audio/tests", test_audio_stop_without_data)
+//the null device always gives frames: this test checks that a running source
+//stops fast (a source without data cannot block: waitAvailable() waits at most 10 ms)
+POTHOS_TEST_BLOCK("/audio/tests", test_audio_source_stop_fast)
 {
     auto source = makeAudioBlock("/audio/source", "int16", 2, "INTERLEAVED", 48e3);
     auto collector = Pothos::BlockRegistry::make("/blocks/collector_sink", Pothos::DType::fromDType(Pothos::DType("int16"), 2));

@@ -10,21 +10,22 @@
 
 using json = nlohmann::json;
 
-//the largest channel count and the first sample rate of the native formats
+//the largest channel count and the sample rates of the native formats
 static void addNativeFormats(ma_context &context, const ma_device_type type, const ma_device_info &device, json &infoObject)
 {
     ma_device_info info{};
     if (ma_context_get_device_info(&context, type, &device.id, &info) != MA_SUCCESS) return;
-    ma_uint32 maxChannels = 0, sampleRate = 0;
+    ma_uint32 maxChannels = 0;
     for (ma_uint32 i = 0; i < info.nativeDataFormatCount; i++)
     {
         maxChannels = std::max(maxChannels, info.nativeDataFormats[i].channels);
-        if (sampleRate == 0) sampleRate = info.nativeDataFormats[i].sampleRate;
     }
     //0 in a native format means "any": the value is not known
     const char *key = (type == ma_device_type_capture)? "Max Input Channels" : "Max Output Channels";
     if (maxChannels != 0) infoObject[key] = maxChannels;
-    if (sampleRate != 0 and not infoObject.contains("Default Sample Rate")) infoObject["Default Sample Rate"] = sampleRate;
+    //miniaudio has no default rate: the rates of the native formats (none: any rate)
+    const auto rates = PothosAudio::nativeSampleRates(info);
+    if (not rates.empty() and not infoObject.contains("Native Sample Rates")) infoObject["Native Sample Rates"] = rates;
 }
 
 static std::string enumerateAudioDevices(void)
