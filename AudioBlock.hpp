@@ -1,11 +1,20 @@
 // Copyright (c) 2014-2016 Josh Blum
+//                    2026 Pothos contributors
 // SPDX-License-Identifier: BSL-1.0
 
+#pragma once
 #include <Pothos/Framework.hpp>
-#include <Poco/Logger.h>
-#include <portaudio.h>
+#include <miniaudio.h>
+#include <atomic>
 #include <chrono>
+#include <optional>
+#include <string>
 
+/*!
+ * The common part of the audio source and sink: a miniaudio context, one
+ * device and a ring buffer between the device callback and work().
+ * The callback does no allocation, takes no lock and does not log.
+ */
 class AudioBlock : public Pothos::Block
 {
 public:
@@ -24,15 +33,51 @@ public:
     void deactivate(void);
 
 protected:
+    //! Wait at most a short time for frames to read (source) or space to write (sink)
+    size_t waitAvailable(void);
+
+    //! Move frames from the ring buffer to the output ports (source)
+    void readFrames(const size_t numFrames);
+
+    //! Move frames from the input ports to the ring buffer (sink)
+    void writeFrames(const size_t numFrames);
+
+    //! Report an overflow or underflow: "aO"/"aU" to stderr or the logger, and start the backoff
+    void reportXrun(const char *shortText, const std::string &message);
+
+    //! True while the backoff time after an overflow or underflow is not over
+    bool inBackoff(void) const;
+
     const std::string _blockName;
     const bool _isSink;
-    Poco::Logger &_logger;
-    PaStream *_stream;
-    PaStreamParameters _streamParams;
-    bool _interleaved;
+    const size_t _numChans;
+    const bool _interleaved;
+    const bool _isInt8;
+    const ma_format _format;
+    const size_t _sampleSize;
+    double _sampleRate;
     bool _sendLabel;
     bool _reportLogger;
     bool _reportStderror;
-    std::chrono::high_resolution_clock::duration _backoffTime;
-    std::chrono::high_resolution_clock::time_point _readyTime;
+    std::chrono::steady_clock::duration _backoffTime;
+    std::chrono::steady_clock::time_point _readyTime;
+
+    //written by the device callback, read by work()
+    std::atomic<bool> _xrun;
+    std::atomic<unsigned long long> _xrunFrames;
+    std::atomic<bool> _dataWritten; //sink: data came after activate()
+
+private:
+    static void dataCallback(ma_device *device, void *output, const void *input, ma_uint32 frameCount);
+    void captureCallback(const void *input, ma_uint32 frameCount);
+    void playbackCallback(void *output, ma_uint32 frameCount);
+    void closeStream(void);
+
+    ma_context _context;
+    std::optional<ma_device_id> _deviceId;
+    std::string _deviceName;
+    ma_device _device;
+    bool _deviceInit;
+    ma_pcm_rb _ringBuffer;
+    bool _ringBufferInit;
 };

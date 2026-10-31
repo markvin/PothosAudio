@@ -81,16 +81,31 @@ set(AUDIO_TESTS
     test_audio_format_from_dtype
     test_audio_backend_names
     test_audio_interleave
+    test_audio_info
+    test_audio_overlay
+    test_audio_device_select
+    test_audio_report_mode
+    test_audio_source_formats
+    test_audio_sink_formats
+    test_audio_sink_start_no_underflow
+    test_audio_source_overflow
+    test_audio_stop_without_data
+    test_audio_loop_graph
 )
 
 POTHOS_MODULE_UTIL(
     TARGET AudioSupport
     SOURCES
+        AudioBlock.cpp
+        AudioSource.cpp
+        AudioSink.cpp
+        AudioInfo.cpp
         AudioHelpers.cpp
         TestAudioHelpers.cpp
+        TestAudioBlocks.cpp
     LIBRARIES audio_json audio_miniaudio
+    DOC_SOURCES AudioSource.cpp AudioSink.cpp
     DESTINATION audio
-    ENABLE_DOCS
 )
 set_target_properties(AudioSupport PROPERTIES CXX_EXTENSIONS OFF)
 target_compile_features(AudioSupport PRIVATE cxx_std_23)

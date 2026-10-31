@@ -1,4 +1,5 @@
 // Copyright (c) 2014-2016 Josh Blum
+//                    2026 Pothos contributors
 // SPDX-License-Identifier: BSL-1.0
 
 #include "AudioBlock.hpp"
@@ -100,38 +101,20 @@ public:
     {
         if (this->workInfo().minInElements == 0) return;
 
-        //calculate the number of frames
-        int numFrames = Pa_GetStreamWriteAvailable(_stream);
-        if (numFrames < 0)
+        //report the frames of silence that the device callback played
+        if (_xrun.exchange(false))
         {
-            throw Pothos::Exception("AudioSink::work()", "Pa_GetStreamWriteAvailable: " + std::string(Pa_GetErrorText(numFrames)));
-        }
-        if (numFrames == 0) numFrames = MIN_FRAMES_BLOCKING;
-        numFrames = std::min<int>(numFrames, this->workInfo().minInElements);
-
-        //get the buffer
-        const void *buffer = nullptr;
-        if (_interleaved) buffer = this->workInfo().inputPointers[0];
-        else buffer = (const void *)this->workInfo().inputPointers.data();
-
-        //peform write to the device
-        PaError err = Pa_WriteStream(_stream, buffer, numFrames);
-
-        //handle the error reporting
-        bool logError = err != paNoError;
-        if (err == paOutputUnderflowed)
-        {
-            _readyTime += _backoffTime;
-            if (_reportStderror) std::cerr << "aU" << std::flush;
-            logError = _reportLogger;
-        }
-        if (logError)
-        {
-            poco_error(_logger, "Pa_WriteStream: " + std::string(Pa_GetErrorText(err)));
+            this->reportXrun("aU", "audio output underflow ("+std::to_string(_xrunFrames.exchange(0))+" frames of silence)");
         }
 
         //not ready to consume because of backoff
-        if (_readyTime >= std::chrono::high_resolution_clock::now()) return this->yield();
+        if (this->inBackoff()) return this->yield();
+
+        //wait a short time for space, then come back
+        const size_t available = this->waitAvailable();
+        if (available == 0) return this->yield();
+        const size_t numFrames = std::min(available, this->workInfo().minInElements);
+        this->writeFrames(numFrames);
 
         //consume buffer (all modes)
         for (auto port : this->inputs()) port->consume(numFrames);
