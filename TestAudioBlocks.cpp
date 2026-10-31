@@ -4,6 +4,7 @@
 //Self-tests of the audio blocks on the null backend of miniaudio
 //(the test runner sets POTHOS_AUDIO_BACKEND=null): no audio hardware
 
+#include "AudioBlock.hpp"
 #include <Pothos/Testing.hpp>
 #include <Pothos/Framework.hpp>
 #include <Pothos/Proxy.hpp>
@@ -272,4 +273,48 @@ POTHOS_TEST_BLOCK("/audio/tests", test_audio_loop_graph)
     POTHOS_TEST_TRUE(source.call<Pothos::Block *>("getPointer")->output(0)->totalElements() > 0);
     POTHOS_TEST_EQUAL(sourceErrors.get().size(), 0u);
     POTHOS_TEST_EQUAL(sinkErrors.get().size(), 0u);
+}
+
+POTHOS_TEST_BLOCK("/audio/tests", test_audio_sink_backoff_recovers)
+{
+    //an underflow with a backoff time: the sink plays the later data
+    static const size_t numFrames = 4410;
+    auto sink = makeAudioBlock("/audio/sink", "float32", 1, "INTERLEAVED", 44.1e3);
+    sink.call("setBackoffTime", 20L);
+    auto feeder = Pothos::BlockRegistry::make("/blocks/feeder_source", Pothos::DType("float32"));
+    Pothos::Topology topology;
+    topology.connect(feeder, 0, sink, 0);
+    topology.commit();
+    feeder.call("feedBuffer", Pothos::BufferChunk(Pothos::DType("float32"), numFrames));
+    POTHOS_TEST_TRUE(topology.waitInactive(0.2, 5.0));
+    std::this_thread::sleep_for(std::chrono::milliseconds(500)); //underflows
+    feeder.call("feedBuffer", Pothos::BufferChunk(Pothos::DType("float32"), numFrames));
+    POTHOS_TEST_TRUE(topology.waitInactive(0.2, 5.0));
+    POTHOS_TEST_EQUAL(sink.call<Pothos::Block *>("getPointer")->input(0)->totalElements(), 2*numFrames);
+}
+
+POTHOS_TEST_BLOCK("/audio/tests", test_audio_device_stopped)
+{
+    //a device that stops while the graph runs (an unplug, a backend error): an error
+    ErrorRecords errors("AudioSource");
+    auto source = makeAudioBlock("/audio/source", "float32", 1, "INTERLEAVED", 48e3);
+    auto collector = Pothos::BlockRegistry::make("/blocks/collector_sink", Pothos::DType("float32"));
+    Pothos::Topology topology;
+    topology.connect(source, 0, collector, 0);
+    topology.commit();
+    std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    auto block = dynamic_cast<AudioBlock *>(source.call<Pothos::Block *>("getPointer"));
+    POTHOS_TEST_TRUE(block != nullptr);
+    block->stopDeviceForTest();
+    bool reported = false;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(2);
+    while (not reported and std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        for (const auto &r : errors.get())
+        {
+            if (r.text.find("stopped") != std::string::npos) reported = true;
+        }
+    }
+    POTHOS_TEST_TRUE(reported);
 }

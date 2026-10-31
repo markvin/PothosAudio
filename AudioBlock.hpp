@@ -32,6 +32,9 @@ public:
     void activate(void);
     void deactivate(void);
 
+    //! Stop the device as an unplug would (for the self-tests only, not a block call)
+    void stopDeviceForTest(void);
+
 protected:
     //! Wait at most a short time for frames to read (source) or space to write (sink)
     size_t waitAvailable(void);
@@ -47,6 +50,9 @@ protected:
 
     //! True while the backoff time after an overflow or underflow is not over
     bool inBackoff(void) const;
+
+    //! True when the device stopped while the block is active; logs it once
+    bool deviceStopped(void);
 
     const std::string _blockName;
     const bool _isSink;
@@ -66,16 +72,21 @@ protected:
     std::atomic<bool> _xrun;
     std::atomic<unsigned long long> _xrunFrames;
     std::atomic<bool> _dataWritten; //sink: data came after activate()
+    std::atomic<bool> _running; //between activate() and deactivate()
+    std::atomic<bool> _deviceStopped; //the device stopped without deactivate()
+    bool _stopReported;
+    std::string _deviceName;
 
 private:
     static void dataCallback(ma_device *device, void *output, const void *input, ma_uint32 frameCount);
+    static void notificationCallback(const ma_device_notification *notification);
     void captureCallback(const void *input, ma_uint32 frameCount);
     void playbackCallback(void *output, ma_uint32 frameCount);
     void closeStream(void);
 
     ma_context _context;
     std::optional<ma_device_id> _deviceId;
-    std::string _deviceName;
+    bool _xrunActive; //used only by the device callback: one report for each event
     ma_device _device;
     bool _deviceInit;
     ma_pcm_rb _ringBuffer;

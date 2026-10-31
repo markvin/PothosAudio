@@ -106,6 +106,9 @@ public:
     {
         if (this->workInfo().minOutElements == 0) return;
 
+        //the device stopped without deactivate(): no more data
+        if (this->deviceStopped()) return;
+
         //report the frames that the device callback dropped
         if (_xrun.exchange(false))
         {

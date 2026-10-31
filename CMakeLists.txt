@@ -91,6 +91,8 @@ set(AUDIO_TESTS
     test_audio_source_overflow
     test_audio_stop_without_data
     test_audio_loop_graph
+    test_audio_sink_backoff_recovers
+    test_audio_device_stopped
 )
 
 POTHOS_MODULE_UTIL(

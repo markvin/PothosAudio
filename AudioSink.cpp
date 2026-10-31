@@ -101,6 +101,9 @@ public:
     {
         if (this->workInfo().minInElements == 0) return;
 
+        //the device stopped without deactivate(): no more data
+        if (this->deviceStopped()) return;
+
         //report the frames of silence that the device callback played
         if (_xrun.exchange(false))
         {

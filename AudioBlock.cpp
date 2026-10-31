@@ -32,6 +32,10 @@ AudioBlock::AudioBlock(const std::string &blockName, const bool isSink, const Po
     _xrun(false),
     _xrunFrames(0),
     _dataWritten(false),
+    _running(false),
+    _deviceStopped(false),
+    _stopReported(false),
+    _xrunActive(false),
     _device{},
     _deviceInit(false),
     _ringBuffer{},
@@ -137,6 +141,7 @@ void AudioBlock::setupStream(const double sampRate)
     }
     config.sampleRate = ma_uint32(sampRate);
     config.dataCallback = &AudioBlock::dataCallback;
+    config.notificationCallback = &AudioBlock::notificationCallback;
     config.pUserData = this;
 
     ma_result result = ma_device_init(&_context, &config, &_device);
@@ -149,6 +154,7 @@ void AudioBlock::setupStream(const double sampRate)
 
     //the device side of the stream
     const std::string name(_isSink? _device.playback.name : _device.capture.name);
+    _deviceName = name;
     const auto internalFormat = _isSink? _device.playback.internalFormat : _device.capture.internalFormat;
     const auto internalChannels = _isSink? _device.playback.internalChannels : _device.capture.internalChannels;
     const auto internalRate = _isSink? _device.playback.internalSampleRate : _device.capture.internalSampleRate;
@@ -197,7 +203,11 @@ void AudioBlock::activate(void)
     _xrun = false;
     _xrunFrames = 0;
     _dataWritten = false;
+    _xrunActive = false;
+    _deviceStopped = false;
+    _stopReported = false;
     _readyTime = std::chrono::steady_clock::now();
+    _running = true; //a stop notification from now on is a failure
     const ma_result result = ma_device_start(&_device);
     if (result != MA_SUCCESS)
     {
@@ -208,11 +218,17 @@ void AudioBlock::activate(void)
 
 void AudioBlock::deactivate(void)
 {
+    _running = false; //this stop is not a failure
     const ma_result result = ma_device_stop(&_device);
     if (result != MA_SUCCESS)
     {
         throw Pothos::Exception("AudioBlock::deactivate()", std::string("ma_device_stop: ") + ma_result_description(result));
     }
+}
+
+void AudioBlock::stopDeviceForTest(void)
+{
+    ma_device_stop(&_device);
 }
 
 /***********************************************************************
@@ -223,6 +239,12 @@ void AudioBlock::dataCallback(ma_device *device, void *output, const void *input
     auto self = static_cast<AudioBlock *>(device->pUserData);
     if (self->_isSink) self->playbackCallback(output, frameCount);
     else self->captureCallback(input, frameCount);
+}
+
+void AudioBlock::notificationCallback(const ma_device_notification *notification)
+{
+    auto self = static_cast<AudioBlock *>(notification->pDevice->pUserData);
+    if (notification->type == ma_device_notification_type_stopped and self->_running) self->_deviceStopped = true;
 }
 
 void AudioBlock::captureCallback(const void *input, ma_uint32 frameCount)
@@ -240,12 +262,14 @@ void AudioBlock::captureCallback(const void *input, ma_uint32 frameCount)
         frameCount -= numFrames;
     }
 
-    //a full buffer: the frames are dropped (an overflow)
+    //a full buffer: the frames are dropped (an overflow), one report for each event
     if (frameCount != 0)
     {
         _xrunFrames += frameCount;
-        _xrun = true;
+        if (not _xrunActive) _xrun = true;
+        _xrunActive = true;
     }
+    else _xrunActive = false;
 }
 
 void AudioBlock::playbackCallback(void *output, ma_uint32 frameCount)
@@ -271,9 +295,11 @@ void AudioBlock::playbackCallback(void *output, ma_uint32 frameCount)
         if (_dataWritten)
         {
             _xrunFrames += frameCount;
-            _xrun = true;
+            if (not _xrunActive) _xrun = true;
+            _xrunActive = true;
         }
     }
+    else _xrunActive = false;
 }
 
 /***********************************************************************
@@ -368,6 +394,17 @@ void AudioBlock::reportXrun(const char *shortText, const std::string &message)
     _readyTime = std::chrono::steady_clock::now() + _backoffTime;
     if (_reportStderror) std::cerr << shortText << std::flush;
     if (_reportLogger) POTHOS_LOG_ERROR(_blockName, "{}", message);
+}
+
+bool AudioBlock::deviceStopped(void)
+{
+    if (not _deviceStopped) return false;
+    if (not _stopReported)
+    {
+        _stopReported = true;
+        POTHOS_LOG_ERROR(_blockName, "The audio device {} stopped (for example it was removed)", _deviceName);
+    }
+    return true;
 }
 
 bool AudioBlock::inBackoff(void) const
