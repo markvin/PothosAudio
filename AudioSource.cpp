@@ -1,4 +1,5 @@
 // Copyright (c) 2014-2016 Josh Blum
+//                    2026 Pothos contributors
 // SPDX-License-Identifier: BSL-1.0
 
 #include "AudioBlock.hpp"
@@ -105,46 +106,30 @@ public:
     {
         if (this->workInfo().minOutElements == 0) return;
 
-        //calculate the number of frames
-        int numFrames = Pa_GetStreamReadAvailable(_stream);
-        if (numFrames < 0)
-        {
-            throw Pothos::Exception("AudioSource::work()", "Pa_GetStreamReadAvailable: " + std::string(Pa_GetErrorText(numFrames)));
-        }
-        if (numFrames == 0) numFrames = MIN_FRAMES_BLOCKING;
-        numFrames = std::min<int>(numFrames, this->workInfo().minOutElements);
+        //the device stopped without deactivate(): no more data
+        if (this->deviceStopped()) return;
 
-        //get the buffer
-        void *buffer = nullptr;
-        if (_interleaved) buffer = this->workInfo().outputPointers[0];
-        else buffer = (void *)this->workInfo().outputPointers.data();
-
-        //peform read from the device
-        PaError err = Pa_ReadStream(_stream, buffer, numFrames);
-
-        //handle the error reporting
-        bool logError = err != paNoError;
-        if (err == paInputOverflowed)
+        //report the frames that the device callback dropped
+        if (_xrun.exchange(false))
         {
-            _readyTime += _backoffTime;
-            if (_reportStderror) std::cerr << "aO" << std::flush;
-            logError = _reportLogger;
+            this->reportXrun("aO", "audio input overflow ("+std::to_string(_xrunFrames.exchange(0))+" frames dropped)");
         }
-        if (logError)
-        {
-            poco_error(_logger, "Pa_ReadStream: " + std::string(Pa_GetErrorText(err)));
-        }
+
+        //wait a short time for frames, then come back
+        const size_t available = this->waitAvailable();
+        if (available == 0) return this->yield();
+        const size_t numFrames = std::min(available, this->workInfo().minOutElements);
+        this->readFrames(numFrames);
 
         if (_sendLabel)
         {
             _sendLabel = false;
-            const auto rate = Pa_GetStreamInfo(_stream)->sampleRate;
-            Pothos::Label label("rxRate", rate, 0);
+            Pothos::Label label("rxRate", _sampleRate, 0);
             for (auto port : this->outputs()) port->postLabel(label);
         }
 
-        //not ready to produce because of backoff
-        if (_readyTime >= std::chrono::high_resolution_clock::now()) return this->yield();
+        //not ready to produce because of backoff: the frames are dropped
+        if (this->inBackoff()) return this->yield();
 
         //produce buffer (all modes)
         for (auto port : this->outputs()) port->produce(numFrames);
