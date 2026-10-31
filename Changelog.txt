@@ -13,7 +13,9 @@ Release 0.4.0 (pending)
 - /devices/audio/info: the keys "Audio Device", "Backend Name" and
   "miniaudio Version"
 - POTHOS_AUDIO_BACKEND selects the miniaudio backend (null for tests)
-- The sink reports no underflow before the first data; the backoff time
+- The sink starts to play with a margin of 2 periods in its buffer (or
+  after 2 periods of a short stream), and reports no underflow before
+  that; one report for each overflow or underflow; the backoff time
   starts at the report
 - CMake 3.25 or higher; nlohmann_json from find_package
 - Add self-tests on the null backend of miniaudio

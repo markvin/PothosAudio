@@ -87,6 +87,9 @@ private:
     ma_context _context;
     std::optional<ma_device_id> _deviceId;
     bool _xrunActive; //used only by the device callback: one report for each event
+    bool _primed; //sink, used only by the device callback: the pre-fill is done
+    unsigned _primeWaits; //sink, used only by the device callback: callbacks that waited for the pre-fill
+    size_t _prefillFrames; //sink: frames in the ring buffer before the playback starts
     ma_device _device;
     bool _deviceInit;
     ma_pcm_rb _ringBuffer;

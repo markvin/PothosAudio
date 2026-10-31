@@ -36,6 +36,9 @@ AudioBlock::AudioBlock(const std::string &blockName, const bool isSink, const Po
     _deviceStopped(false),
     _stopReported(false),
     _xrunActive(false),
+    _primed(false),
+    _primeWaits(0),
+    _prefillFrames(0),
     _device{},
     _deviceInit(false),
     _ringBuffer{},
@@ -171,6 +174,8 @@ void AudioBlock::setupStream(const double sampRate)
     //the ring buffer: about 100 ms, at least 4 periods and 2 blocking reads
     const size_t period = size_t(internalPeriod) * _device.sampleRate / std::max<ma_uint32>(internalRate, 1);
     const size_t numFrames = std::max({size_t(_device.sampleRate/10), 4*period, size_t(2*MIN_FRAMES_BLOCKING)});
+    //the sink starts to play with 2 periods in the ring buffer: a margin for the jitter of work()
+    _prefillFrames = std::min(2*std::max<size_t>(period, 1), numFrames/2);
     result = ma_pcm_rb_init(_format, ma_uint32(_numChans), ma_uint32(numFrames), nullptr, nullptr, &_ringBuffer);
     if (result != MA_SUCCESS)
     {
@@ -204,6 +209,8 @@ void AudioBlock::activate(void)
     _xrunFrames = 0;
     _dataWritten = false;
     _xrunActive = false;
+    _primed = false;
+    _primeWaits = 0;
     _deviceStopped = false;
     _stopReported = false;
     _readyTime = std::chrono::steady_clock::now();
@@ -274,6 +281,19 @@ void AudioBlock::captureCallback(const void *input, ma_uint32 frameCount)
 
 void AudioBlock::playbackCallback(void *output, ma_uint32 frameCount)
 {
+    //the pre-fill: silence until the ring buffer has a margin, or until a
+    //short stream waited 2 callbacks (a stream can be shorter than the margin)
+    if (not _primed)
+    {
+        const bool full = ma_pcm_rb_available_read(&_ringBuffer) >= _prefillFrames;
+        if (_dataWritten and (full or ++_primeWaits > 2)) _primed = true;
+        else
+        {
+            ma_silence_pcm_frames(output, frameCount, _format, ma_uint32(_numChans));
+            return;
+        }
+    }
+
     auto dst = static_cast<char *>(output);
     const size_t frameSize = _sampleSize*_numChans;
     while (frameCount != 0)
@@ -292,12 +312,9 @@ void AudioBlock::playbackCallback(void *output, ma_uint32 frameCount)
     if (frameCount != 0)
     {
         ma_silence_pcm_frames(dst, frameCount, _format, ma_uint32(_numChans));
-        if (_dataWritten)
-        {
-            _xrunFrames += frameCount;
-            if (not _xrunActive) _xrun = true;
-            _xrunActive = true;
-        }
+        _xrunFrames += frameCount;
+        if (not _xrunActive) _xrun = true;
+        _xrunActive = true;
     }
     else _xrunActive = false;
 }
