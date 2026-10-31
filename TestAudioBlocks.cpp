@@ -271,8 +271,19 @@ POTHOS_TEST_BLOCK("/audio/tests", test_audio_loop_graph)
         std::this_thread::sleep_for(std::chrono::milliseconds(300));
     }
     POTHOS_TEST_TRUE(source.call<Pothos::Block *>("getPointer")->output(0)->totalElements() > 0);
-    POTHOS_TEST_EQUAL(sourceErrors.get().size(), 0u);
-    POTHOS_TEST_EQUAL(sinkErrors.get().size(), 0u);
+    POTHOS_TEST_TRUE(sink.call<Pothos::Block *>("getPointer")->input(0)->totalElements() > 0);
+
+    //the two devices have independent clocks (on a busy computer the null
+    //devices too): an overflow or underflow report can come, other errors not
+    for (auto *errors : {&sourceErrors, &sinkErrors})
+    {
+        for (const auto &r : errors->get())
+        {
+            std::cout << "record: " << r.text << std::endl;
+            const bool xrun = r.text.find("overflow") != std::string::npos or r.text.find("underflow") != std::string::npos;
+            POTHOS_TEST_TRUE(xrun);
+        }
+    }
 }
 
 POTHOS_TEST_BLOCK("/audio/tests", test_audio_sink_backoff_recovers)
