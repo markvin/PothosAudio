@@ -24,7 +24,7 @@
  *
  * |param deviceName[Device Name] The name of an audio device on the system,
  * the integer index of an audio device on the system,
- * or an empty string to use the default output device.
+ * or an empty string to use the default input device.
  * |widget StringEntry()
  * |default ""
  * |preview valid
@@ -110,16 +110,16 @@ public:
         if (this->deviceStopped()) return;
 
         //report the frames that the device callback dropped
-        if (_xrun.exchange(false))
+        if (const auto frames = this->takeXrun())
         {
-            this->reportXrun("aO", "audio input overflow ("+std::to_string(_xrunFrames.exchange(0))+" frames dropped)");
+            this->reportXrun("aO", "audio input overflow ("+std::to_string(*frames)+" frames dropped)");
         }
 
         //wait a short time for frames, then come back
         const size_t available = this->waitAvailable();
         if (available == 0) return this->yield();
-        const size_t numFrames = std::min(available, this->workInfo().minOutElements);
-        this->readFrames(numFrames);
+        const size_t numFrames = this->readFrames(std::min(available, this->workInfo().minOutElements));
+        if (numFrames == 0) return this->yield();
 
         if (_sendLabel)
         {

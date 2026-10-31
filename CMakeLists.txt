@@ -59,6 +59,8 @@ if(APPLE)
         "-framework CoreFoundation" "-framework CoreAudio" "-framework AudioToolbox")
 elseif(UNIX)
     target_link_libraries(audio_miniaudio PUBLIC m)
+elseif(WIN32)
+    target_link_libraries(audio_miniaudio PUBLIC winmm) #timeBeginPeriod of the blocks
 endif()
 
 ########################################################################
@@ -81,7 +83,11 @@ set(AUDIO_TESTS
     test_audio_format_from_dtype
     test_audio_backend_names
     test_audio_interleave
+    test_audio_native_sample_rates
     test_audio_info
+    test_audio_bad_rate
+    test_audio_rate_rounded
+    test_audio_deactivate_without_stream
     test_audio_overlay
     test_audio_device_select
     test_audio_report_mode
@@ -89,7 +95,7 @@ set(AUDIO_TESTS
     test_audio_sink_formats
     test_audio_sink_start_no_underflow
     test_audio_source_overflow
-    test_audio_stop_without_data
+    test_audio_source_stop_fast
     test_audio_loop_graph
     test_audio_sink_backoff_recovers
     test_audio_device_stopped

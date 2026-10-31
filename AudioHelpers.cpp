@@ -130,3 +130,15 @@ std::optional<ma_device_id> PothosAudio::findDevice(ma_context &ctx, const ma_de
     }
     throw Pothos::NotFoundException(what, "No matching device: "+name);
 }
+
+std::vector<ma_uint32> PothosAudio::nativeSampleRates(const ma_device_info &info)
+{
+    std::vector<ma_uint32> rates;
+    for (ma_uint32 i = 0; i < info.nativeDataFormatCount; i++)
+    {
+        const auto rate = info.nativeDataFormats[i].sampleRate;
+        if (rate != 0 and std::find(rates.begin(), rates.end(), rate) == rates.end()) rates.push_back(rate);
+    }
+    std::sort(rates.begin(), rates.end());
+    return rates;
+}
